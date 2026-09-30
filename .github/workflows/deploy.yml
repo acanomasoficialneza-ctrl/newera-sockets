@@ -1,0 +1,40 @@
+name: Deploy Sockets
+
+on:
+  push:
+    branches:
+      - develop
+      - prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+
+      - name: Setup SSH Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add remote server to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync and Restart (Prod)
+        if: github.ref == 'refs/heads/prod'
+        run: |
+          rsync -avz --delete -e "ssh -p ${{ secrets.SSH_PORT }}" ./target/*.jar ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/var/www/produccion/newera-app/backend/sockets-prod/
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "systemctl restart sockets-prod"
