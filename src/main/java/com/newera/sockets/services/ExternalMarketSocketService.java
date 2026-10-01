@@ -88,6 +88,7 @@ public class ExternalMarketSocketService {
     private void connectEodForex() {
         try {
             httpClient.newWebSocketBuilder()
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                     .buildAsync(URI.create("wss://ws.eodhistoricaldata.com/ws/forex?api_token=" + EOD_TOKEN), new WebSocket.Listener() {
                         StringBuilder textBuilder = new StringBuilder();
 
@@ -131,6 +132,7 @@ public class ExternalMarketSocketService {
     private void connectEodUs() {
         try {
             httpClient.newWebSocketBuilder()
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                     .buildAsync(URI.create("wss://ws.eodhistoricaldata.com/ws/us-quote?api_token=" + EOD_TOKEN), new WebSocket.Listener() {
                         StringBuilder textBuilder = new StringBuilder();
 
