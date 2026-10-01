@@ -45,7 +45,7 @@ public class ExternalMarketSocketService {
     private void connectBinance() {
         try {
             httpClient.newWebSocketBuilder()
-                    .buildAsync(URI.create("wss://stream.binance.com:9443/ws"), new WebSocket.Listener() {
+                    .buildAsync(URI.create("wss://stream.binance.us:9443/ws"), new WebSocket.Listener() {
                         StringBuilder textBuilder = new StringBuilder();
 
                         @Override
