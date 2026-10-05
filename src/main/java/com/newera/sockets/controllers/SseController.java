@@ -16,17 +16,7 @@ public class SseController {
 
     private final SseService sseService;
 
-    // Suscripción del Cliente a su propio dashboard
-    @GetMapping(value = "/usuario/{idUsuario}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamUsuario(@PathVariable Integer idUsuario) {
-        return sseService.subscribe(idUsuario);
-    }
 
-    // Suscripción de un Administrador / Supremo al dashboard de un cliente específico
-    @GetMapping(value = "/admin/cliente/{idUsuario}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamAdminParaCliente(@PathVariable Integer idUsuario) {
-        return sseService.subscribeAdminToClient(idUsuario);
-    }
 
     // FASE 1: Endpoint exclusivo para Balance
     @GetMapping(value = "/balance/{idUsuario}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

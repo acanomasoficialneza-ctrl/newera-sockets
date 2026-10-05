@@ -177,25 +177,24 @@ public class ExternalMarketSocketService {
         try {
             String symbol = extractJsonString(message, "s");
             String priceStr = extractJsonString(message, "c"); // Last price
+            String askStr = extractJsonString(message, "a");   // Best ask price
+            String bidStr = extractJsonString(message, "b");   // Best bid price
             String percentStr = extractJsonString(message, "P");
-            // The legacy system used 'c' (last price) for Compra and 'w' (weighted average price) for Venta
-            String wStr = extractJsonString(message, "w");
 
             if (symbol != null && priceStr != null) {
                 symbol = symbol.replace("USDT", "").toUpperCase();
                 double currentPrice = Double.parseDouble(priceStr);
                 double priceChangePercent = percentStr != null ? Double.parseDouble(percentStr) : 0.0;
                 
-                // Matches legacy ForexWebSocketClient behavior for CRIPTO/FONDOS
-                double askPrice = currentPrice; // compra = "c"
-                double bidPrice = wStr != null ? Double.parseDouble(wStr) : currentPrice; // venta = "w"
+                double askPrice = askStr != null ? Double.parseDouble(askStr) : currentPrice;
+                double bidPrice = bidStr != null ? Double.parseDouble(bidStr) : currentPrice;
 
                 PriceDto existing = sseService.getMarketPrices().get(symbol);
                 if (existing != null) {
-                    existing.setPrecioActual(BigDecimal.valueOf(currentPrice).setScale(5, RoundingMode.HALF_UP));
-                    existing.setPrecioCompra(BigDecimal.valueOf(askPrice).setScale(5, RoundingMode.HALF_UP));
-                    existing.setPrecioVenta(BigDecimal.valueOf(bidPrice).setScale(5, RoundingMode.HALF_UP));
-                    existing.setVariacionPorcentaje(BigDecimal.valueOf(priceChangePercent).setScale(5, RoundingMode.HALF_UP));
+                    existing.setPrecioActual(BigDecimal.valueOf(currentPrice).setScale(6, RoundingMode.HALF_UP));
+                    existing.setPrecioCompra(BigDecimal.valueOf(askPrice).setScale(6, RoundingMode.HALF_UP));
+                    existing.setPrecioVenta(BigDecimal.valueOf(bidPrice).setScale(6, RoundingMode.HALF_UP));
+                    existing.setVariacionPorcentaje(BigDecimal.valueOf(priceChangePercent).setScale(6, RoundingMode.HALF_UP));
                     existing.setTimestamp(LocalDateTime.now());
                 }
             }
@@ -248,9 +247,9 @@ public class ExternalMarketSocketService {
                     
                     PriceDto existing = sseService.getMarketPrices().get(cleanSymbol);
                     if (existing != null) {
-                        existing.setPrecioActual(BigDecimal.valueOf(currentPrice).setScale(5, RoundingMode.HALF_UP));
-                        existing.setPrecioCompra(BigDecimal.valueOf(askPrice).setScale(5, RoundingMode.HALF_UP));
-                        existing.setPrecioVenta(BigDecimal.valueOf(bidPrice).setScale(5, RoundingMode.HALF_UP));
+                        existing.setPrecioActual(BigDecimal.valueOf(currentPrice).setScale(6, RoundingMode.HALF_UP));
+                        existing.setPrecioCompra(BigDecimal.valueOf(askPrice).setScale(6, RoundingMode.HALF_UP));
+                        existing.setPrecioVenta(BigDecimal.valueOf(bidPrice).setScale(6, RoundingMode.HALF_UP));
                         existing.setTimestamp(LocalDateTime.now());
                     }
                 }

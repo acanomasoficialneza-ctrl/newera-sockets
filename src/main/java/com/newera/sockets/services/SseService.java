@@ -31,10 +31,8 @@ import java.util.concurrent.CopyOnWriteArraySet;
 @RequiredArgsConstructor
 public class SseService {
 
-    // Emitters
-    private final Map<Integer, SseEmitter> userEmitters = new ConcurrentHashMap<>();
-    private final Map<Integer, Set<SseEmitter>> adminClientEmitters = new ConcurrentHashMap<>();
-    
+    // Emitters (Legado eliminado)
+
     // Nuevos Emitters Fase 1 y 2 y 3
     private final Map<Integer, SseEmitter> balanceEmitters = new ConcurrentHashMap<>();
     private final Set<SseEmitter> marketEmitters = new CopyOnWriteArraySet<>();
@@ -93,41 +91,6 @@ public class SseService {
 
 
 
-    // Suscripción para Clientes Normales
-    public SseEmitter subscribe(Integer idUsuario) {
-        SseEmitter emitter = new SseEmitter(3600000L); // 1 hora timeout
-        userEmitters.put(idUsuario, emitter);
-        
-        forceSyncUserFromDB(idUsuario);
-
-        emitter.onCompletion(() -> cleanupUser(idUsuario));
-        emitter.onTimeout(() -> cleanupUser(idUsuario));
-        emitter.onError((e) -> cleanupUser(idUsuario));
-
-        return emitter;
-    }
-
-    // Suscripción para Administradores / Supremos espiando un cliente
-    public SseEmitter subscribeAdminToClient(Integer idUsuario) {
-        SseEmitter emitter = new SseEmitter(3600000L);
-        adminClientEmitters.computeIfAbsent(idUsuario, k -> new CopyOnWriteArraySet<>()).add(emitter);
-        
-        forceSyncUserFromDB(idUsuario);
-
-        Runnable cleanup = () -> {
-            Set<SseEmitter> set = adminClientEmitters.get(idUsuario);
-            if (set != null) {
-                set.remove(emitter);
-                if (set.isEmpty()) adminClientEmitters.remove(idUsuario);
-            }
-        };
-
-        emitter.onCompletion(cleanup);
-        emitter.onTimeout(cleanup);
-        emitter.onError(e -> cleanup.run());
-
-        return emitter;
-    }
 
     // Suscripción de Balance
     public SseEmitter subscribeBalance(Integer idUsuario) {
@@ -176,8 +139,7 @@ public class SseService {
     }
 
     private void cleanupUser(Integer idUsuario) {
-        userEmitters.remove(idUsuario);
-        if (!adminClientEmitters.containsKey(idUsuario) && !balanceEmitters.containsKey(idUsuario) && !positionsEmitters.containsKey(idUsuario)) {
+        if (!balanceEmitters.containsKey(idUsuario) && !positionsEmitters.containsKey(idUsuario)) {
             userPositionsCache.remove(idUsuario);
             userCache.remove(idUsuario);
         }
@@ -202,12 +164,11 @@ public class SseService {
         marketPrices.put(symbol, realPrice);
     }
 
-    // Sincroniza desde la BD a la RAM CADA 5 SEGUNDOS (Solo usuarios siendo observados)
-    // Esto es para detectar nuevas posiciones sin tumbar la base de datos
-    @Scheduled(fixedRate = 5000)
+    // Sincroniza desde la BD a la RAM CADA 1 SEGUNDO (Solo usuarios siendo observados)
+    // Para entregar la última información de la BD al socket de balance
+    @Scheduled(fixedRate = 1000)
     public void syncActiveUsersFromDB() {
-        Set<Integer> activeUsers = new HashSet<>(userEmitters.keySet());
-        activeUsers.addAll(adminClientEmitters.keySet());
+        Set<Integer> activeUsers = new HashSet<>();
         activeUsers.addAll(balanceEmitters.keySet());
         activeUsers.addAll(positionsEmitters.keySet());
         
@@ -219,24 +180,24 @@ public class SseService {
     // Variable para controlar el guardado en BD y no saturarla cada segundo
     private int tickCount = 0;
 
-    // Tarea súper rápida (1 segundo): Recalcula y Emite el P&L en Memoria
+    // Tarea (1 segundo): Emite el P&L en Memoria y Balance crudo
     @Scheduled(fixedRate = 1000)
-    public void broadcastUserDashboards() {
+    public void emitirDatosEnVivo() {
         tickCount++;
-        boolean shouldSaveToDb = (tickCount % 5 == 0); // Guarda en BD cada 5 segundos
+        boolean shouldSaveToDb = (tickCount % 10 == 0); // Guarda en BD cada 5 segundos (10 * 500ms)
 
-        if (userEmitters.isEmpty() && adminClientEmitters.isEmpty() && balanceEmitters.isEmpty() && marketEmitters.isEmpty() && positionsEmitters.isEmpty()) return;
+        if (balanceEmitters.isEmpty() && marketEmitters.isEmpty() && positionsEmitters.isEmpty()) return;
 
         // 1. Actualizar precios en memoria (Mantenemos los simulados SOLO si el servicio externo falló o no existe el símbolo)
         List<PriceDto> preciosGlobales = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
+        
         for (Map.Entry<String, PriceDto> entry : marketPrices.entrySet()) {
             PriceDto p = entry.getValue();
             
-            // Si el precio sigue siendo 0, significa que el WebSocket aún no ha mandado el precio inicial
-            // Solo mandamos al front los precios que ya tienen valor real.
-            if (p.getPrecioActual() != null && p.getPrecioActual().doubleValue() > 0) {
-                preciosGlobales.add(p);
-            }
+            // Se envía el precio tal como esté en memoria. Si es nulo o viejo, así se va.
+            
+            preciosGlobales.add(p);
         }
 
         // --- BROADCAST MERCADOS GLOBALES ---
@@ -259,7 +220,9 @@ public class SseService {
             
             UsuarioParcial usuario = userCache.get(idUsuario);
             if (usuario != null) {
+                // Se envía el balance puramente de la base de datos
                 BalanceDto balance = new BalanceDto(usuario.getTotalDinero(), usuario.getMargenLibre(), usuario.getMargen());
+                
                 try {
                     emitter.send(SseEmitter.event().name("balance-update").data(balance));
                 } catch (IOException e) {
@@ -295,64 +258,9 @@ public class SseService {
                 if (emitters.isEmpty()) positionsEmitters.remove(idUsuario);
             }
         }
-
-        // 2. Iterar sobre todos los usuarios activos (Legado)
-        Set<Integer> activeUsers = new HashSet<>(userEmitters.keySet());
-        activeUsers.addAll(adminClientEmitters.keySet());
-
-        for (Integer idUsuario : activeUsers) {
-            UsuarioParcial usuario = userCache.get(idUsuario);
-            List<ApuestaCliente> posiciones = userPositionsCache.get(idUsuario);
-            
-            if (usuario == null || posiciones == null) continue;
-
-            // 3. Calcular P&L en vivo
-            List<ApuestaCliente> posicionesCalculadas = new ArrayList<>();
-            for (ApuestaCliente pos : posiciones) {
-                double pnl = calcularPnL(pos);
-                pos.setGananciaPerdida(BigDecimal.valueOf(pnl).setScale(2, RoundingMode.HALF_UP));
-                posicionesCalculadas.add(pos);
-
-                // Guardar directamente en el registro de la apuesta, eliminando el uso de "históricos"
-                if (shouldSaveToDb) {
-                    apuestaRepository.save(pos);
-                }
-            }
-
-            UserDashboardDto dashboard = new UserDashboardDto(
-                    usuario.getTotalDinero(),
-                    usuario.getMargenLibre(),
-                    usuario.getMargen(),
-                    posicionesCalculadas,
-                    preciosGlobales
-            );
-
-            // 4. Enviar al Cliente
-            SseEmitter userEmitter = userEmitters.get(idUsuario);
-            if (userEmitter != null) {
-                try {
-                    userEmitter.send(SseEmitter.event().name("dashboard-update").data(dashboard));
-                } catch (IOException e) {
-                    cleanupUser(idUsuario);
-                }
-            }
-
-            // 5. Enviar a cualquier Administrador observando a este cliente
-            Set<SseEmitter> admins = adminClientEmitters.get(idUsuario);
-            if (admins != null) {
-                List<SseEmitter> deadAdmins = new ArrayList<>();
-                for (SseEmitter adminEmitter : admins) {
-                    try {
-                        adminEmitter.send(SseEmitter.event().name("dashboard-update").data(dashboard));
-                    } catch (IOException e) {
-                        deadAdmins.add(adminEmitter);
-                    }
-                }
-                deadAdmins.forEach(admins::remove);
-                if (admins.isEmpty()) adminClientEmitters.remove(idUsuario);
-            }
-        }
     }
+
+    private int alphaTickCount = 0;
 
     // ============================================
     // FASE 3: MOTOR CENTRAL ALPHA (Corre cada 3 segundos)
@@ -419,7 +327,7 @@ public class SseService {
         double calculo3 = 0;
         double calculo4 = 0;
 
-        if ("COMPRA".equalsIgnoreCase(tipoCompra)) {
+        if ("COMPRA".equalsIgnoreCase(tipoCompra) || "COMPRAR".equalsIgnoreCase(tipoCompra)) {
             if (pCompra > openPrice) {
                 // GANA
                 calculo1 = investment * rule.getGana1();
@@ -443,7 +351,7 @@ public class SseService {
                     calculo4 = calculo3 * calculo2;
                 }
             }
-        } else if ("VENTA".equalsIgnoreCase(tipoCompra)) {
+        } else if ("VENTA".equalsIgnoreCase(tipoCompra) || "VENDER".equalsIgnoreCase(tipoCompra)) {
             if (pVenta < openPrice) {
                 // GANA (venta en corto)
                 calculo1 = investment * rule.getGana1();
