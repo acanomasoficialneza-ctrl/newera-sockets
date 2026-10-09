@@ -19,3 +19,12 @@ spring:
         format_sql: false
         dialect: org.hibernate.dialect.PostgreSQLDialect
         default_schema: newera
+
+app:
+  sockets:
+    binance-enabled: false
+    eod-enabled: true
+    binance-url: "wss://stream.binance.us:9443/ws"
+    eod-forex-url: "wss://ws.eodhistoricaldata.com/ws/forex"
+    eod-us-url: "wss://ws.eodhistoricaldata.com/ws/us-quote"
+    eod-token: "68b09a16609891.62026589"
