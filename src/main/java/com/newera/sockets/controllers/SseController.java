@@ -24,12 +24,6 @@ public class SseController {
         return sseService.subscribeBalance(idUsuario);
     }
 
-    // FASE 1: Endpoint exclusivo para Mercado (Global)
-    @GetMapping(value = "/mercados", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamMercados() {
-        return sseService.subscribeMarket();
-    }
-
     // FASE 3: Endpoint exclusivo para Posiciones de un cliente
     @GetMapping(value = "/posiciones/{idUsuario}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamPosiciones(@PathVariable Integer idUsuario) {

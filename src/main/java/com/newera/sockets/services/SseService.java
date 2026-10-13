@@ -35,7 +35,6 @@ public class SseService {
 
     // Nuevos Emitters Fase 1 y 2 y 3
     private final Map<Integer, SseEmitter> balanceEmitters = new ConcurrentHashMap<>();
-    private final Set<SseEmitter> marketEmitters = new CopyOnWriteArraySet<>();
     private final Map<Integer, Set<SseEmitter>> positionsEmitters = new ConcurrentHashMap<>();
     
     // RAM Caches (Evita colapsar la BD)
@@ -65,29 +64,9 @@ public class SseService {
         "DIVISA", new LeverageRule(1.2, 0.8, 1.2, 0.8)
     );
 
-    // Memoria de Precios Globales (Simulados de momento)
+    // Memoria de Precios Globales (Exclusivamente alimentada por sockets de posiciones abiertas)
     private final Map<String, PriceDto> marketPrices = new ConcurrentHashMap<>();
 
-    @PostConstruct
-    public void initMarketLists() {
-        String[] cripto = {"BTC", "ETH", "LTC", "ALPHA", "ADA", "BNB", "DOGE", "AVAX", "SHIB", "BCH", "DOT", "TRX", "LINK", "MATIC", "ICP", "NEAR", "UNI", "DAI", "APT", "STX", "FIL", "ATOM", "ARB", "WIF", "MKR", "INJ", "GRT", "OP", "JUP", "FLOW", "PEPE"};
-        String[] fondos = {"IMX", "AI", "DIA"};
-        String[] acciones = {"AMZN", "TSLA", "MSFT", "NVDA", "AAPL", "GOOG", "META", "LLY", "JNJ", "ORCL", "ADBE", "UBER", "SBUX", "MCD", "KO", "WMT", "PFE", "AZN", "BABA", "PEP", "BBVA", "MA", "INTC", "ERII", "BE", "CARR", "CMI"};
-        String[] divisas = {"EURUSD", "EURJPY", "EURMXN", "GBPUSD", "EURCAD", "EURAUD", "CHFAUD", "CHFCAD", "CHFGBP", "EURSGD", "GBPPLN", "GBPNZD", "CHFNOK", "CHFMXN", "ZAREUR", "EURCHF", "GBPJPY", "GBPCHF", "AUDUSD", "NZDUSD", "USDCAD", "EUREUR", "EURNZD", "EURPLN", "GBPEUR", "GBPAUD", "GBPNOK", "GBPMXN", "USDMXN"};
-        String[] materias = {"WTIUSD", "XBRUSD", "XAUUSD", "XAGUSD", "BRLUSD", "MADUSD", "THBUSD"};
-
-        populateCategory(cripto, "CRIPTO");
-        populateCategory(fondos, "FONDOS");
-        populateCategory(acciones, "ACCIONES");
-        populateCategory(divisas, "DIVISA");
-        populateCategory(materias, "MATERIAS");
-    }
-
-    private void populateCategory(String[] lista, String categoria) {
-        for (String simbolo : lista) {
-            marketPrices.put(simbolo, new PriceDto(simbolo, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, LocalDateTime.now().minusMinutes(1), categoria));
-        }
-    }
 
 
 
@@ -101,18 +80,6 @@ public class SseService {
         emitter.onCompletion(() -> balanceEmitters.remove(idUsuario));
         emitter.onTimeout(() -> balanceEmitters.remove(idUsuario));
         emitter.onError((e) -> balanceEmitters.remove(idUsuario));
-        
-        return emitter;
-    }
-
-    // Suscripción Global de Mercado
-    public SseEmitter subscribeMarket() {
-        SseEmitter emitter = new SseEmitter(3600000L);
-        marketEmitters.add(emitter);
-        
-        emitter.onCompletion(() -> marketEmitters.remove(emitter));
-        emitter.onTimeout(() -> marketEmitters.remove(emitter));
-        emitter.onError((e) -> marketEmitters.remove(emitter));
         
         return emitter;
     }
@@ -186,32 +153,7 @@ public class SseService {
         tickCount++;
         boolean shouldSaveToDb = (tickCount % 10 == 0); // Guarda en BD cada 5 segundos (10 * 500ms)
 
-        if (balanceEmitters.isEmpty() && marketEmitters.isEmpty() && positionsEmitters.isEmpty()) return;
-
-        // 1. Actualizar precios en memoria (Mantenemos los simulados SOLO si el servicio externo falló o no existe el símbolo)
-        List<PriceDto> preciosGlobales = new ArrayList<>();
-        LocalDateTime now = LocalDateTime.now();
-        
-        for (Map.Entry<String, PriceDto> entry : marketPrices.entrySet()) {
-            PriceDto p = entry.getValue();
-            
-            // Se envía el precio tal como esté en memoria. Si es nulo o viejo, así se va.
-            
-            preciosGlobales.add(p);
-        }
-
-        // --- BROADCAST MERCADOS GLOBALES ---
-        if (!marketEmitters.isEmpty()) {
-            List<SseEmitter> deadEmitters = new ArrayList<>();
-            for (SseEmitter emitter : marketEmitters) {
-                try {
-                    emitter.send(SseEmitter.event().name("market-update").data(preciosGlobales));
-                } catch (IOException e) {
-                    deadEmitters.add(emitter);
-                }
-            }
-            marketEmitters.removeAll(deadEmitters);
-        }
+        if (balanceEmitters.isEmpty() && positionsEmitters.isEmpty()) return;
 
         // --- BROADCAST BALANCE ---
         for (Map.Entry<Integer, SseEmitter> entry : balanceEmitters.entrySet()) {
@@ -297,23 +239,29 @@ public class SseService {
         }
     }
 
-    // Motor Matemático P&L en Memoria
+    // Motor Matemático P&L en Memoria (Puro 1:1, sin números inventados)
     private double calcularPnL(ApuestaCliente pos) {
-        String simbolo = pos.getCompra() != null ? pos.getCompra().trim().toUpperCase() : "UNKNOWN"; 
+        String rawSimbolo = pos.getCompra() != null ? pos.getCompra().trim().toUpperCase() : "UNKNOWN"; 
+        String cleanSimbolo = rawSimbolo.replace("/USD", "").replace("/USDT", "").replace("/", "");
         
-        PriceDto price = marketPrices.computeIfAbsent(simbolo, k -> {
-            double initPrice = pos.getValorUnidad() != null && pos.getValorUnidad().doubleValue() > 0 
-                ? pos.getValorUnidad().doubleValue() 
-                : 0.0;
-            BigDecimal decPrice = BigDecimal.valueOf(initPrice).setScale(5, RoundingMode.HALF_UP);
-            return new PriceDto(k, decPrice, decPrice, decPrice, BigDecimal.ZERO, LocalDateTime.now(), pos.getCategoria() != null ? pos.getCategoria().toUpperCase() : "CRIPTO");
-        });
+        PriceDto price = marketPrices.get(cleanSimbolo);
+        if (price == null) {
+            price = marketPrices.get(rawSimbolo);
+        }
+
+        // Si aún no ha llegado el primer tick del socket para este activo, usamos su valorUnidad de entrada (PnL = 0)
+        double openPrice = pos.getValorUnidad() != null && pos.getValorUnidad().doubleValue() > 0 
+            ? pos.getValorUnidad().doubleValue() 
+            : 0.0;
+
+        if (price == null) {
+            return 0.0;
+        }
         
         // Evaluamos usando precioCompra para apuestas a la COMPRA, y precioVenta para apuestas a la VENTA
-        double pCompra = price.getPrecioCompra() != null ? price.getPrecioCompra().doubleValue() : (price.getPrecioActual() != null ? price.getPrecioActual().doubleValue() : 0.0);
-        double pVenta = price.getPrecioVenta() != null ? price.getPrecioVenta().doubleValue() : (price.getPrecioActual() != null ? price.getPrecioActual().doubleValue() : 0.0);
+        double pCompra = price.getPrecioCompra() != null ? price.getPrecioCompra().doubleValue() : (price.getPrecioActual() != null ? price.getPrecioActual().doubleValue() : openPrice);
+        double pVenta = price.getPrecioVenta() != null ? price.getPrecioVenta().doubleValue() : (price.getPrecioActual() != null ? price.getPrecioActual().doubleValue() : openPrice);
         
-        double openPrice = pos.getValorUnidad() != null ? pos.getValorUnidad().doubleValue() : pCompra;
         if (openPrice == 0) return 0.0;
 
         double investment = pos.getMontoApuesta() != null ? pos.getMontoApuesta().doubleValue() : 0.0;
@@ -334,7 +282,7 @@ public class SseService {
                 calculo2 = calculo1 / openPrice;
                 calculo3 = pCompra - openPrice;
                 
-                if ("DIVISA".equalsIgnoreCase(categoria) && (simbolo.contains("USD"))) {
+                if ("DIVISA".equalsIgnoreCase(categoria) && (rawSimbolo.contains("USD"))) {
                     calculo4 = (calculo3 * calculo2) * rule.getGana2();
                 } else {
                     calculo4 = calculo3 * calculo2;
@@ -345,7 +293,7 @@ public class SseService {
                 calculo2 = calculo1 / openPrice;
                 calculo3 = pCompra - openPrice; // Valor Negativo natural
                 
-                if ("DIVISA".equalsIgnoreCase(categoria) && (simbolo.contains("USD"))) {
+                if ("DIVISA".equalsIgnoreCase(categoria) && (rawSimbolo.contains("USD"))) {
                     calculo4 = (calculo3 * calculo2) * rule.getPierde2();
                 } else {
                     calculo4 = calculo3 * calculo2;
@@ -356,41 +304,25 @@ public class SseService {
                 // GANA (venta en corto)
                 calculo1 = investment * rule.getGana1();
                 calculo2 = calculo1 / openPrice;
-                calculo3 = pVenta - openPrice; // Negativo, pero GANA? Espera, la logica heredada hace (venta - valorCompraApuesta). Y luego hace negativo.
-                // Recreamos exactamente la formula legacy para VENTA
+                calculo3 = pVenta - openPrice; 
                 calculo4 = -(calculo3 * calculo2); 
-                // En el legacy para VENTA si gana (pVenta < openPrice) calculaba (pVenta - openPrice) que es negativo y luego mult por -1.
                 
-                if ("DIVISA".equalsIgnoreCase(categoria) && (simbolo.contains("USD"))) {
+                if ("DIVISA".equalsIgnoreCase(categoria) && (rawSimbolo.contains("USD"))) {
                     calculo4 = -(calculo3 * calculo2) * rule.getGana2();
                 } 
             } else {
                 // PIERDE (venta en corto)
                 calculo1 = investment * rule.getPierde1();
                 calculo2 = calculo1 / openPrice;
-                calculo3 = pVenta - openPrice; // Positivo
-                
-                // En el legacy, si pierde (pVenta > openPrice), calculaba (pVenta - openPrice) que es positivo, y le ponia el menos.
+                calculo3 = pVenta - openPrice; 
                 calculo4 = -(calculo3 * calculo2);
                 
-                if ("DIVISA".equalsIgnoreCase(categoria) && (simbolo.contains("USD"))) {
+                if ("DIVISA".equalsIgnoreCase(categoria) && (rawSimbolo.contains("USD"))) {
                     calculo4 = -(calculo3 * calculo2) * rule.getPierde2();
                 } 
             }
         }
 
         return calculo4;
-    }
-
-    private double generarPrecioBaseRealista(String categoria) {
-        if (categoria == null) return 100.0;
-        switch (categoria.toUpperCase()) {
-            case "ACCIONES": return 150.0 + random.nextDouble() * 200.0; // 150 - 350
-            case "DIVISA": return 0.8 + random.nextDouble() * 0.5; // 0.8 - 1.3
-            case "MATERIAS": return 50.0 + random.nextDouble() * 2000.0; // 50 - 2050
-            case "FONDOS": return 200.0 + random.nextDouble() * 300.0; // 200 - 500
-            case "CRIPTO": return 100.0 + random.nextDouble() * 60000.0;
-            default: return 100.0;
-        }
     }
 }
